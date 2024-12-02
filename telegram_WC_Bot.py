@@ -39,17 +39,24 @@ class WorldcoinTelegramBot:
         
     def get_worldcoin_price(self):
         """
-        Fetch current Worldcoin price from CoinGecko
+        Fetch current Worldcoin price from CoinGecko with improved error handling
         
-        :return: Current price of Worldcoin in USD
+        :return: Current price of Worldcoin in USD or None if failed
         """
         try:
-            url = 'https://api.coingecko.com/api/v3/simple/price?ids=worldcoin&vs_currencies=usd'
-            response = requests.get(url)
+            url = 'https://api.coingecko.com/api/v3/simple/price?ids=world-coin&vs_currencies=usd'
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()  # Raise exception for bad responses
             data = response.json()
-            return data['worldcoin']['usd']
+            if 'world-coin' in data and 'usd' in data['world-coin']:
+                return data['world-coin']['usd']
+            logger.error("Unexpected API response format")
+            return None
+        except requests.RequestException as e:
+            logger.error(f"Price fetch error: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Error fetching price: {e}")
+            logger.error(f"Unexpected error fetching price: {e}")
             return None
     
     def get_price_trend(self):
@@ -133,18 +140,29 @@ class WorldcoinTelegramBot:
     
     def start_price_tracking(self, user_id, initial_price=None):
         """
-        Start tracking price for a specific user
+        Start tracking price for a specific user with additional checks
         
         :param user_id: Telegram user ID
         :param initial_price: Initial price to start tracking from
         """
-        if user_id not in self.tracking_users:
-            self.tracking_users[user_id] = {
-                'last_notification_price': initial_price or int(self.get_worldcoin_price()),
-                'tracking': True
-            }
-            return True
-        return False
+        try:
+            if user_id not in self.tracking_users:
+                current_price = self.get_worldcoin_price()
+                if current_price is None:
+                    logger.error("Failed to start price tracking: Could not fetch initial price")
+                    return False
+                
+                self.tracking_users[user_id] = {
+                    'last_notification_price': initial_price or int(current_price),
+                    'tracking': True,
+                    'alerts': []
+                }
+                logger.info(f"Started price tracking for user {user_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error in start_price_tracking for user {user_id}: {e}")
+            return False
     
     def stop_price_tracking(self, user_id):
         """
@@ -228,11 +246,19 @@ class WorldcoinTelegramBot:
         
         @self.bot.message_handler(commands=['track'])
         def start_tracking(message):
-            user_id = message.from_user.id
-            if self.start_price_tracking(user_id):
-                self.bot.reply_to(message, "Price tracking started! You'll receive notifications when Worldcoin price increases by $1.")
-            else:
-                self.bot.reply_to(message, "You are already tracking Worldcoin prices.")
+            try:
+                user_id = message.from_user.id
+                if self.start_price_tracking(user_id):
+                    self.bot.reply_to(message, "Price tracking started! You'll receive notifications when Worldcoin price increases by $1.")
+                else:
+                    current_price = self.get_worldcoin_price()
+                    if current_price is None:
+                        self.bot.reply_to(message, "Sorry, I couldn't start tracking prices right now. Please try again later.")
+                    else:
+                        self.bot.reply_to(message, "You are already tracking Worldcoin prices.")
+            except Exception as e:
+                logger.error(f"Track command error: {e}")
+                self.bot.reply_to(message, "An error occurred while starting price tracking. Please try again later.")
         
         @self.bot.message_handler(commands=['stop'])
         def stop_tracking(message):
